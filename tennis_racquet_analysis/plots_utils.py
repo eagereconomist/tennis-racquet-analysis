@@ -1,13 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+from typing import Optional, Sequence
+from matplotlib.lines import Line2D
 import pandas as pd
 import seaborn as sns
-import scipy.cluster.hierarchy as sch
-from scipy.spatial.distance import pdist
 import statsmodels.api as sm
 import re
 import plotly.express as px
+import plotly.graph_objects as go
+
 
 sns.set_theme(
     style="ticks",
@@ -20,21 +22,16 @@ def _init_fig(figsize=(20, 14)):
     """
     Create a fig + ax with shared cubehelix palette.
     """
-    palette = sns.cubehelix_palette(
-        n_colors=8, start=3, rot=1, reverse=True, light=0.7, dark=0.1, gamma=0.4
-    )
-    plt.rc("axes", prop_cycle=plt.cycler("color", palette))
+    _apply_cubehelix_style()
     fig, ax = plt.subplots(figsize=figsize)
     return fig, ax
 
 
-def _save_fig(fig: plt.Figure, path: Path):
-    """
-    Ensure directory exists, save and close.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path)
-    plt.close(fig)
+def _apply_cubehelix_style():
+    palette = sns.cubehelix_palette(
+        n_colors=8, start=3, rot=1, reverse=True, light=0.7, dark=0.1, gamma=0.4
+    )
+    plt.rc("axes", prop_cycle=plt.cycler("color", palette))
 
 
 def _set_axis_bounds(ax, vals: pd.Series, axis: str = "x"):
@@ -45,57 +42,13 @@ def _set_axis_bounds(ax, vals: pd.Series, axis: str = "x"):
         ax.set_ylim(lower, higher)
 
 
-def df_to_array(df: pd.DataFrame, columns: list[str] | None = None) -> np.ndarray:
-    if columns:
-        return df[columns].to_numpy()
-    return df.select_dtypes(include="number").to_numpy()
-
-
-def df_to_labels(
-    df: pd.DataFrame,
-    label_col: str,
-) -> np.ndarray:
-    return df[label_col].astype(str).to_numpy()
-
-
-def compute_linkage(
-    array: np.ndarray,
-    method: str = "centroid",
-    metric: str = "euclidean",
-    optimal_ordering: bool = True,
-) -> np.ndarray:
-    dists = pdist(array, metric=metric)
-    return sch.linkage(y=dists, method=method, metric=metric, optimal_ordering=optimal_ordering)
-
-
-def dendrogram_plot(
-    Z: np.ndarray,
-    labels: np.ndarray,
-    output_path: Path,
-    orient: str = "right",
-    save: bool = True,
-    ax: plt.Axes | None = None,
-) -> dict:
-    if ax is None:
-        fig, ax = _init_fig()
-    else:
-        fig = ax.figure
-    result = (
-        sch.dendrogram(
-            Z,
-            labels=labels,
-            orientation=orient,
-            ax=ax,
-        ),
-        ax.set(
-            title=("Hierarchical Clustering Dendrogram (all leaves)"),
-            xlabel=("Distance"),
-            ylabel=("Racquet Model"),
-        ),
-    )
-    if save:
-        _save_fig(fig, output_path)
-    return result
+def _save_fig(fig: plt.Figure, path: Path):
+    """
+    Ensure directory exists, save and close.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path)
+    plt.close(fig)
 
 
 def histogram(
@@ -305,31 +258,6 @@ def qq_plot(
     return ax
 
 
-def qq_plots_all(
-    df: pd.DataFrame,
-    output_dir: Path,
-    columns: list[str] | None = None,
-    ncols: int = 3,
-    save: bool = True,
-) -> plt.Figure:
-    if columns is None:
-        columns = df.select_dtypes(include="number").columns.tolist()
-    n = len(columns)
-    nrows = (n + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(4 * ncols, 4 * nrows))
-    axes = axes.flatten()
-    for ax, col in zip(axes, columns):
-        series = df[col]
-        sm.qqplot(series, line="r", ax=ax)
-        ax.set_title(col.capitalize())
-    for extra_ax in axes[n:]:
-        extra_ax.set_visible(False)
-    plt.tight_layout()
-    if save:
-        _save_fig(fig, output_dir)
-    return fig
-
-
 def inertia_plot(inertia_df: pd.DataFrame, output_path: Path, save: bool = True) -> plt.Axes:
     fig, ax = _init_fig()
     ax.plot(inertia_df["k"], inertia_df["inertia"], marker="o")
@@ -385,6 +313,190 @@ def cumulative_prop_var_plot(
     return fig
 
 
+def pca_biplot(
+    df: pd.DataFrame,
+    loadings: pd.DataFrame,
+    pve: pd.Series,
+    pc_x: int = 0,
+    pc_y: int = 1,
+    scale: float = 1.0,
+    figsize: tuple[float, float] = (20, 14),
+    hue: Optional[Sequence] = None,
+    save: bool = True,
+    output_path: Optional[Path] = None,
+) -> plt.Figure:
+    feature_cols = loadings.columns.tolist()
+    X = df[feature_cols].values
+    scores = X.dot(loadings.values.T)
+    var_x, var_y = pve.iloc[pc_x], pve.iloc[pc_y]
+    x_label = f"PC{pc_x + 1} ({var_x:.1%})"
+    y_label = f"PC{pc_y + 1} ({var_y:.1%})"
+
+    fig, ax = _init_fig(figsize=figsize)
+
+    if hue is None:
+        ax.scatter(scores[:, pc_x], scores[:, pc_y], alpha=1)
+    else:
+        cat_hue = pd.Categorical(hue)
+        codes = cat_hue.codes
+        categories = cat_hue.categories
+
+        cmap = plt.get_cmap("tab10")
+
+        ax.scatter(scores[:, pc_x], scores[:, pc_y], c=codes, cmap=cmap, alpha=1)
+
+        handles = [
+            Line2D([], [], marker="o", color=cmap(i), linestyle="", markersize=6)
+            for i in range(len(categories))
+        ]
+        labels = [str(cat) for cat in categories]
+        ax.legend(handles, labels, title="cluster", loc="best")
+
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title("PCA Biplot", pad=40, fontdict={"fontsize": 30})
+
+    for k, feature in enumerate(feature_cols):
+        x_arr = loadings.iat[pc_x, k] * scale
+        y_arr = loadings.iat[pc_y, k] * scale
+        ax.arrow(
+            0,
+            0,
+            x_arr,
+            y_arr,
+            head_width=0.02 * scale,
+            head_length=0.02 * scale,
+            length_includes_head=True,
+            color="black",
+        )
+        ax.text(x_arr * 1.1, y_arr * 1.1, feature, fontsize=10)
+
+    if save and output_path is not None:
+        _save_fig(fig, output_path)
+
+    return fig
+
+
+def pca_biplot_3d(
+    df: pd.DataFrame,
+    loadings: pd.DataFrame,
+    pve: pd.Series,
+    pc_x: int = 0,
+    pc_y: int = 1,
+    pc_z: int = 2,
+    scale: float = 1.0,
+    hue: pd.Series | None = None,
+    output_path: Path | None = None,
+    show: bool = False,
+) -> go.Figure:
+    feature_cols = loadings.columns.tolist()
+    if len(feature_cols) < 3:
+        raise ValueError("Need at least 3 features for a 3D plot.")
+    X = df[feature_cols].values
+    scores = X.dot(loadings.values.T)
+    x_vals, y_vals, z_vals = scores[:, pc_x], scores[:, pc_y], scores[:, pc_z]
+
+    x_label = f"PC{pc_x + 1} ({pve.iloc[pc_x]:.1%})"
+    y_label = f"PC{pc_y + 1} ({pve.iloc[pc_y]:.1%})"
+    z_label = f"PC{pc_z + 1} ({pve.iloc[pc_z]:.1%})"
+
+    plotly_df = pd.DataFrame(
+        {
+            "PC_x": x_vals,
+            "PC_y": y_vals,
+            "PC_z": z_vals,
+        }
+    )
+    plotly_df.rename(columns={"PC_x": x_label, "PC_y": y_label, "PC_z": z_label}, inplace=True)
+
+    if hue is not None:
+        hue_str = hue.astype(str).rename("cluster")
+        plotly_df["cluster"] = hue_str
+
+        try:
+            order = sorted(hue_str.unique(), key=int)
+        except ValueError:
+            order = list(hue_str.unique())
+    else:
+        order = None
+
+    fig = px.scatter_3d(
+        plotly_df,
+        x=x_label,
+        y=y_label,
+        z=z_label,
+        color="cluster" if hue is not None else None,
+        category_orders={"cluster": order} if order is not None else None,
+        color_discrete_sequence=px.colors.qualitative.T10,
+        labels={"x": x_label, "y": y_label, "z": z_label},
+        title="3D PCA Biplot",
+        width=1000,
+        height=1000,
+    )
+
+    for i, feature in enumerate(feature_cols):
+        xi = loadings.iat[pc_x, i] * scale
+        yi = loadings.iat[pc_y, i] * scale
+        zi = loadings.iat[pc_z, i] * scale
+
+        fig.add_trace(
+            go.Scatter3d(
+                x=[0, xi],
+                y=[0, yi],
+                z=[0, zi],
+                mode="lines",
+                line=dict(color="black", width=4),
+                showlegend=False,
+            )
+        )
+        vec = np.array([xi, yi, zi])
+        length = np.linalg.norm(vec)
+        if length > 0:
+            head_length = scale * 0.04
+            direction = vec / length
+            ux, uy, uz = direction * head_length
+        else:
+            uz = uy = uz = 0
+
+        fig.add_trace(
+            go.Cone(
+                x=[xi],
+                y=[yi],
+                z=[zi],
+                u=[ux],
+                v=[uy],
+                w=[uz],
+                anchor="tip",
+                sizemode="absolute",
+                sizeref=head_length,
+                showscale=False,
+                colorscale=[[0, "black"], [1, "black"]],
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scatter3d(
+                x=[xi],
+                y=[yi],
+                z=[zi],
+                mode="text",
+                text=[feature],
+                textposition="top center",
+                showlegend=False,
+            )
+        )
+    fig.update_layout(
+        legend=dict(title="Cluster", traceorder="normal"),
+    )
+
+    if output_path:
+        fig.write_image(str(output_path))
+    if show:
+        fig.show()
+
+    return fig
+
+
 def cluster_scatter(
     df: pd.DataFrame,
     x_axis: str,
@@ -433,11 +545,12 @@ def cluster_scatter_3d(
         color=label_column,
         category_orders={label_column: cluster_order},
         title=f"3D Cluster Scatter (k={label_column.split('_')[-1]})",
-        width=1400,
-        height=1000,
+        width=1300,
+        height=1300,
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.write_image(str(output_path))
+    if save:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.write_image(str(output_path))
     return fig
 
 

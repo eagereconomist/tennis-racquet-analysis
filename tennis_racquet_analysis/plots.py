@@ -3,6 +3,8 @@ import typer
 from pathlib import Path
 from loguru import logger
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+from math import ceil
 import plotly.express as px
 
 
@@ -10,25 +12,25 @@ from tennis_racquet_analysis.config import DATA_DIR, FIGURES_DIR, PROCESSED_DATA
 from tennis_racquet_analysis.preprocessing_utils import load_data
 from tennis_racquet_analysis.plots_utils import (
     _save_fig,
-    df_to_array,
-    df_to_labels,
-    compute_linkage,
-    dendrogram_plot,
+    _apply_cubehelix_style,
     histogram,
     scatter_plot,
     box_plot,
     violin_plot,
     correlation_matrix_heatmap,
     qq_plot,
-    qq_plots_all,
     inertia_plot,
     silhouette_plot,
     scree_plot,
     cumulative_prop_var_plot,
+    pca_biplot,
+    pca_biplot_3d,
     cluster_scatter,
     cluster_scatter_3d,
     plot_batch_clusters,
 )
+
+from tennis_racquet_analysis.preprocessing_utils import compute_pca_summary
 
 app = typer.Typer()
 
@@ -197,88 +199,6 @@ def violinplt(
         logger.success(f"Violin plot saved to {output_path!r}")
 
 
-@app.command("dendrogram")
-def dendrogram_plt(
-    input_file: Path = typer.Argument(..., help="csv filename."),
-    dir_label: str = typer.Argument("Sub-folder under data/"),
-    label_col: Optional[str] = typer.Option(
-        None,
-        "--label",
-        "-l",
-        help="Column to use for leaf labels; if omitted leaves are numbered by index.",
-    ),
-    linkage_method: str = typer.Option(
-        "centroid",
-        "--method",
-        "-m",
-        help="Methods for calculating the distance between clusters are: 'single', 'complete', 'average', 'weighted', 'centroid' (default), 'median', and 'ward'.",
-    ),
-    distance_metric: str = typer.Option(
-        "euclidean",
-        "--metric",
-        "-d",
-        help="Pairwise distances between observations in n-dimensional space. The different distance metrics that are available to use are:"
-        "'braycurtis', 'canberra', 'chebyshev', 'cityblock', 'correlation', 'cosine', 'dice', 'euclidean' (default), 'hamming', 'jaccard', "
-        "'jensenshannon', 'kulczynski1', 'mahalanobis', 'matching', 'minkowski', 'rogerstanimoto', 'russellrao', 'seuclidean', 'sokalmichener',"
-        "'sokalsneath', 'sqeuclidean', 'yule'.",
-    ),
-    ordering: bool = typer.Option(
-        True,
-        "--ordering",
-        "-ord",
-        help="Optimal ordering set to 'True' by default, which results in more intuitive tree structure when the data are visualized."
-        "However, the algorithm can be slow especially with larger datasets.",
-    ),
-    output_path: Path = typer.Option(
-        FIGURES_DIR,
-        "--output-path",
-        "-o",
-        dir_okay=True,
-        file_okay=False,
-    ),
-    orient: str = typer.Option(
-        "right",
-        "--orient",
-        "-ort",
-        help="Direction to plot the dendrogram. The following directions are: 'top', 'bottom', 'left', and 'right' (default).",
-    ),
-    no_save: bool = typer.Option(
-        False,
-        "--no-save",
-        "-n",
-        help="Generate plot, but don't write to disk.",
-    ),
-):
-    input_path = DATA_DIR / dir_label / input_file
-    df = load_data(input_path)
-    stem = Path(input_file).stem
-    file_name = f"{stem}_{label_col}_{linkage_method}_{distance_metric}_dendrogram.png"
-    output_path = output_path / file_name
-    array = df_to_array(df)
-    if label_col is None:
-        labels = None
-    else:
-        if label_col not in df.columns:
-            raise typer.BadParameter(
-                f"`{label_col}` is not a column in your data. Available: {list(df.columns)}"
-            )
-        labels = df_to_labels(df, label_col)
-    Z = compute_linkage(
-        array, method=linkage_method, metric=distance_metric, optimal_ordering=ordering
-    )
-    steps = tqdm(total=1, desc="Dendrogram", ncols=100)
-    dendrogram_plot(
-        Z=Z,
-        labels=labels,
-        output_path=output_path,
-        orient=orient,
-        save=not no_save,
-    )
-    steps.update(1)
-    steps.close()
-    logger.success(f"Dendrogram {'generated' if no_save else 'saved to'} {output_path}")
-
-
 @app.command("heatmap")
 def corr_heat(
     input_file: str = typer.Argument("csv filename."),
@@ -338,41 +258,49 @@ def qq(
     ),
 ):
     df = load_data(DATA_DIR / dir_label / input_file)
+    stem = Path(input_file).stem
     if column and not all_cols:
-        for col in column:
-            stem = Path(input_file).stem
+        for col in tqdm(column, desc="Q-Q Plot"):
             file_name = f"{stem}_{col}_qq.png"
             output_path = output_dir / file_name
             qq_plot(df=df, column=col, output_path=output_path, save=not no_save)
             if not no_save:
-                logger.success(f"Saved Q-Q Plot for {col.capitalize()} to {output_path!r}")
+                logger.success(f"Saved Q-Q Plot for '{col}' -> {output_path!r}")
     elif all_cols:
-        stem = Path(input_file).stem
-        fig = qq_plots_all(df=df, output_dir=output_dir, columns=None, ncols=3, save=False)
+        cols = df.select_dtypes(include="number").columns.tolist()
+        n = len(cols)
+        ncols = 3
+        nrows = ceil(n / ncols)
+        _apply_cubehelix_style()
+        fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(4 * ncols, 4 * nrows))
+        axes_flat = axes.flatten()
+        for i, col in enumerate(tqdm(cols, desc="Q-Q Plots")):
+            ax = axes_flat[i]
+            qq_plot(df=df, column=col, output_path=None, save=False, ax=ax)
+            ax.set_title(col.capitalize())
+        for ax in axes_flat[n:]:
+            ax.set_visible(False)
         fig.suptitle(f"Q-Q Plots: {stem} Data")
         fig.tight_layout()
-        file_name = f"{stem}_qq_plots_all.png"
+        file_name = f"{stem}_qq_all.png"
         output_path = output_dir / file_name
         if not no_save:
             _save_fig(fig, output_path)
-            logger.success(f"Saved combined Q-Q plots to {output_path!r}")
+            logger.success(f"Saved Combined Q-Q Plots -> {output_path!r}")
         else:
             fig.show()
     else:
-        raise typer.BadParameter("Specify one or more --column or use --all")
+        raise typer.BadParameter("Specify one or more --column or use --all.")
 
 
 @app.command("elbow")
 def elbow_plot(
     input_file: str = typer.Argument(..., help="csv from `inertia` command."),
-    input_dir: Path = typer.Option(
-        PROCESSED_DATA_DIR,
-        "--input_dir",
+    input_dir: str = typer.Option(
+        "processed",
+        "--input-dir",
         "-d",
-        exists=True,
-        dir_okay=True,
-        file_okay=True,
-        help="Directory where feature-engineered files live.",
+        help="Sub-folder under data/ (e.g. external, interim, processed, raw), where the input file lives.",
     ),
     output_dir: Path = typer.Option(
         FIGURES_DIR,
@@ -380,7 +308,7 @@ def elbow_plot(
         "-o",
         dir_okay=True,
         file_okay=False,
-        help="Where to save the elbow plot png.",
+        help="Save the silhouette plot PNG to the 'figures' directory.",
     ),
     no_save: bool = typer.Option(
         False,
@@ -391,7 +319,7 @@ def elbow_plot(
 ):
     df = load_data(DATA_DIR / input_dir / input_file)
     stem = Path(input_file).stem
-    output_path = output_dir / f"{stem}_elbow.png"
+    output_path = output_dir / f"{stem}.png"
     fig = inertia_plot(
         df,
         output_path,
@@ -521,6 +449,150 @@ def plot_cumulative_prop_var(
         fig.show()
 
 
+@app.command("pca-biplot")
+def plot_pca_biplot(
+    input_file: str = typer.Argument(..., help="CSV filename under data subfolder."),
+    input_dir: Path = typer.Option(
+        PROCESSED_DATA_DIR,
+        "-d",
+        "--input-dir",
+        exists=True,
+        dir_okay=True,
+        file_okay=True,
+        help="Directory where scaled data files live.",
+    ),
+    feature_columns: list[str] = typer.Option(
+        None,
+        "-f",
+        "--feature-column",
+        help="Numeric column(s) to include; repeat flag to add more. Defaults to all.",
+    ),
+    random_state: int = typer.Option(4572, "-s", "--seed", help="Random seed for PCA."),
+    pc_x: int = typer.Option(0, "--pc-x", help="Principal component for x-axis (0-indexed)."),
+    pc_y: int = typer.Option(1, "--pc-y", help="Principal component for y-axis (0-indexed)."),
+    scale: float = typer.Option(1.0, "--scale", help="Arrow length multiplier for loadings."),
+    figsize: tuple[float, float] = typer.Option(
+        (20, 14), "--figsize", help="Figure size (width height)."
+    ),
+    hue_column: Optional[str] = typer.Option(
+        None,
+        "--hue",
+        help="Column name for coloring samples (Will be excluded from PCA summary helper).",
+    ),
+    output_dir: Path = typer.Option(
+        FIGURES_DIR,
+        "-o",
+        "--output-dir",
+        exists=True,
+        dir_okay=True,
+        file_okay=False,
+        help="Directory to save the biplot PNG.",
+    ),
+):
+    df = load_data(input_dir / input_file)
+
+    summary = compute_pca_summary(
+        df=df, feature_columns=feature_columns, hue_column=hue_column, random_state=random_state
+    )
+    loadings = summary["loadings"]
+    pve = summary["pve"]
+
+    hue = df[hue_column] if hue_column else None
+
+    fig = pca_biplot(
+        df=df,
+        loadings=loadings,
+        pve=pve,
+        pc_x=pc_x,
+        pc_y=pc_y,
+        scale=scale,
+        figsize=figsize,
+        hue=hue,
+        save=False,
+        output_path=None,
+    )
+
+    stem = Path(input_file).stem
+    out_file = f"{stem}_pca_biplot_PC{pc_x + 1}_{pc_y + 1}.png"
+    out_path = output_dir / out_file
+    _save_fig(fig, out_path)
+    logger.success(f"Saved PCA biplot → {out_path!r}")
+
+
+@app.command("pca-biplot-3d")
+def plot_3d_pca_biplot(
+    input_file: str = typer.Argument(..., help="CSV filename under data subfolder."),
+    input_dir: Path = typer.Option(
+        PROCESSED_DATA_DIR,
+        "-d",
+        "--input-dir",
+        exists=True,
+        dir_okay=True,
+        file_okay=True,
+        help="Directory of csv.",
+    ),
+    feature_columns: list[str] = typer.Option(
+        None,
+        "-f",
+        "--feature-column",
+        help="Numeric column(s) to include; repeat flag to add more. Defaults to all.",
+    ),
+    random_state: int = typer.Option(4572, "-s", "--seed", help="Random seed for PCA."),
+    pc_x: int = typer.Option(0, "--x", help="Principal component for x-axis (0-indexed)."),
+    pc_y: int = typer.Option(1, "--y", help="Principal component for y-axis (0-indexed)."),
+    pc_z: int = typer.Option(2, "--z", help="Principal component for z-axis (0-indexed)."),
+    scale: float = typer.Option(1.0, "--scale", help="Arrow length multiplier for loadings."),
+    hue_column: Optional[str] = typer.Option(
+        None,
+        "--hue",
+        help="Column name for coloring samples (Will be excluded from PCA summary helper).",
+    ),
+    output_dir: Path = typer.Option(
+        FIGURES_DIR,
+        "-o",
+        "--output-dir",
+        exists=True,
+        dir_okay=True,
+        file_okay=False,
+        help="Directory to save the biplot PNG.",
+    ),
+    no_save: bool = typer.Option(
+        False,
+        "--no-save",
+        "-n",
+        help="Show plot, but don't save.",
+    ),
+):
+    df = load_data(input_dir / input_file)
+
+    summary = compute_pca_summary(
+        df=df, feature_columns=feature_columns, hue_column=hue_column, random_state=random_state
+    )
+    loadings, pve = summary["loadings"], summary["pve"]
+    hue = df[hue_column] if hue_column else None
+
+    stem = Path(input_file).stem
+    png_path = output_dir / f"{stem}_3d_pca_biplot.png"
+
+    pca_biplot_3d(
+        df=df,
+        loadings=loadings,
+        pve=pve,
+        pc_x=pc_x,
+        pc_y=pc_y,
+        pc_z=pc_z,
+        scale=scale,
+        hue=hue,
+        output_path=None if no_save else png_path,
+        show=no_save,
+    )
+
+    if not no_save:
+        logger.success(f"Saved 3D Biplot -> {png_path!r}")
+    else:
+        logger.info("Displayed Interactive 3D PCA Biplot in browser.")
+
+
 @app.command("cluster")
 def cluster_plot(
     input_file: str = typer.Argument(..., help="csv filename under data subfolder."),
@@ -639,8 +711,6 @@ def cluster_3d_plot(
             color=label_column,
             category_orders={label_column: cluster_order},
             title=f"3D Cluster Scatter (k={label_column.split('_')[-1]})",
-            width=800,
-            height=600,
         )
         fig.update_traces(marker=dict(size=5, opacity=1))
         fig.update_layout(

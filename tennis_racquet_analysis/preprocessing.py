@@ -1,12 +1,11 @@
 from pathlib import Path
 from loguru import logger
 from tqdm import tqdm
-from typing import List
+from typing import List, Optional
 import typer
 from tennis_racquet_analysis.config import (
     RAW_DATA_DIR,
     INTERIM_DATA_DIR,
-    PROCESSED_DATA_DIR,
     DATA_DIR,
 )
 from tennis_racquet_analysis.preprocessing_utils import (
@@ -143,13 +142,10 @@ def main(
 def pca_summary(
     input_file: str = typer.Argument(..., help="csv filename under data subfolder."),
     input_dir: Path = typer.Option(
-        PROCESSED_DATA_DIR,
+        "processed",
         "--input-dir",
         "-d",
-        exists=True,
-        dir_okay=True,
-        file_okay=True,
-        help="Directory where scaled data files live.",
+        help="Sub-folder under data/ (e.g. external, interim, processed, raw), where the input file lives.",
     ),
     feature_columns: list[str] = typer.Option(
         None,
@@ -157,45 +153,70 @@ def pca_summary(
         "-f",
         help="Name of numeric column to include; repeat flag to add more. Defaults to all numeric.",
     ),
+    n_components: Optional[int] = typer.Option(
+        None,
+        "--n-components",
+        "-n",
+        help="How many principal components to compute/export (defaults to all).",
+    ),
     random_state: int = typer.Option(
         4572, "--seed", "-s", help="Random seed for reproducibility."
     ),
     output_dir: Path = typer.Option(
-        PROCESSED_DATA_DIR,
-        "-o",
+        "processed",
         "--output-dir",
-        exists=True,
-        dir_okay=True,
-        file_okay=False,
-        help="Directory to write the PCA summary csv's.",
+        "-o",
+        help="Sub-folder under data/ (e.g. external, interim, processed, raw), where the input file lives.",
     ),
 ):
     input_path = DATA_DIR / input_dir / input_file
+    output_path = DATA_DIR / output_dir
     df = load_data(input_path)
     dict_pca = compute_pca_summary(
         df=df,
         feature_columns=feature_columns,
+        n_components=None,
         random_state=random_state,
     )
     stem = Path(input_file).stem
+    df_loadings = dict_pca["loadings"]
+    df_loadings = df_loadings.reset_index().rename(columns={"index": "component"})
     loadings_path = write_csv(
-        dict_pca["loadings"], prefix=stem, suffix="pca_loadings", output_dir=output_dir
+        df_loadings, prefix=stem, suffix="pca_loadings", output_dir=output_path
     )
     logger.success(f"Saved PCA Loadings → {loadings_path!r}")
 
+    df_scores_full = dict_pca["scores"]
+    if n_components is not None:
+        df_scores = df_scores_full.iloc[:, :n_components].reset_index(drop=True)
+    else:
+        df_scores = df_scores_full.reset_index(drop=True)
+    suffix = f"pca_scores_{df_scores.shape[1]}pc" if n_components else "pca_scores"
+    scores_path = write_csv(
+        df_scores,
+        prefix=stem,
+        suffix=suffix,
+        output_dir=output_path,
+    )
+    logger.success(f"Saved PCA Scores → {scores_path!r}")
+
+    df_pve = dict_pca["pve"]
+    df_pve = df_pve.reset_index().rename(columns={"index": "component"})
     pve_path = write_csv(
-        dict_pca["pve"].to_frame(),
+        df_pve,
         prefix=stem,
         suffix="pca_proportion_var",
-        output_dir=output_dir,
+        output_dir=output_path,
     )
     logger.success(f"Saved Explained Variance Ratio → {pve_path!r}")
 
+    df_cpve = dict_pca["cpve"]
+    df_cpve = df_cpve.reset_index().rename(columns={"index": "component"})
     cpve_path = write_csv(
-        dict_pca["cpve"].to_frame(),
+        df_cpve,
         prefix=stem,
         suffix="pca_cumulative_var",
-        output_dir=output_dir,
+        output_dir=output_path,
     )
     logger.success(f"Saved Cumulative Variance Ratio → {cpve_path!r}")
 
